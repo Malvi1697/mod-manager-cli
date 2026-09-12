@@ -224,18 +224,18 @@ Examples:
 
 		deps := pkg.Versions[0].Dependencies
 		// Filter out BepInExPack
-		var mods []string
+		var mods []thunderstore.DepRef
 		for _, dep := range deps {
 			ref := thunderstore.ParseDep(dep)
 			if ref.Name == "BepInExPack_Valheim" || ref.Name == "BepInEx_pack" {
 				continue
 			}
-			mods = append(mods, fmt.Sprintf("%s-%s", ref.Owner, ref.Name))
+			mods = append(mods, ref)
 		}
 
 		fmt.Printf("Modpack \033[36m%s-%s\033[0m has %d mods:\n", pkg.Owner, pkg.Name, len(mods))
-		for _, m := range mods {
-			fmt.Printf("  - %s\n", m)
+		for _, mod := range mods {
+			fmt.Printf("  - %s-%s v%s\n", mod.Owner, mod.Name, mod.Version)
 		}
 		fmt.Println()
 
@@ -256,8 +256,9 @@ Examples:
 
 		// Install each mod
 		for _, mod := range mods {
-			if err := installer.Install(paths, cfg, &reg, mod, "both"); err != nil {
-				fmt.Printf("\033[31mWarning: failed to install %s: %v\033[0m\n", mod, err)
+			fullName := fmt.Sprintf("%s-%s", mod.Owner, mod.Name)
+			if err := installer.InstallVersion(paths, cfg, &reg, fullName, "both", mod.Version); err != nil {
+				fmt.Printf("\033[31mWarning: failed to install %s: %v\033[0m\n", fullName, err)
 			}
 		}
 

@@ -127,8 +127,15 @@ func ResolveDependencies(pkg *Package, installed map[string]bool) ([]DepRef, err
 
 			inStack[fullName] = true
 
-			// Fetch the dependency package to get its deps
-			depPkg, err := GetPackage(ref.Owner, ref.Name)
+			// Fetch the pinned dependency version so its dependency graph also
+			// matches the version required by the package manifest.
+			var depPkg *Package
+			var err error
+			if ref.Version == "" {
+				depPkg, err = GetPackage(ref.Owner, ref.Name)
+			} else {
+				depPkg, err = GetPackageVersion(ref.Owner, ref.Name, ref.Version)
+			}
 			if err != nil {
 				// Non-fatal: some deps may not resolve
 				fmt.Printf("  Warning: could not resolve dependency %s: %v\n", fullName, err)

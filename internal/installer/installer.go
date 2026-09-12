@@ -76,7 +76,12 @@ func InstallVersion(paths config.Paths, cfg config.Config, reg *config.Registry,
 		}
 
 		fmt.Printf("  Installing dependency %s...\n", depFullName)
-		depPkg, err := thunderstore.GetPackage(dep.Owner, dep.Name)
+		var depPkg *thunderstore.Package
+		if dep.Version == "" {
+			depPkg, err = thunderstore.GetPackage(dep.Owner, dep.Name)
+		} else {
+			depPkg, err = thunderstore.GetPackageVersion(dep.Owner, dep.Name, dep.Version)
+		}
 		if err != nil {
 			fmt.Printf("  Warning: could not fetch %s: %v\n", depFullName, err)
 			continue
