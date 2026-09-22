@@ -1,8 +1,11 @@
 package thunderstore
 
 import (
+	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const hexiumBaseURL = "https://valheim.hexium.gg"
@@ -120,4 +123,64 @@ func versionSegment(parts []string, i int) int {
 		return 0
 	}
 	return v
+}
+
+// rateLimitAttempts is how many times a registry request is retried after the
+// registry answers 429. A bulk operation such as a profile import issues one
+// request per mod per registry, which is enough to be rate limited part way
+// through; without a retry those mods are reported as missing packages.
+const rateLimitAttempts = 4
+
+// rateLimitBackoff is the wait before each retry.
+var rateLimitBackoff = []time.Duration{time.Second, 3 * time.Second, 6 * time.Second, 12 * time.Second}
+
+// errRateLimited reports that a registry rate limited the request and kept
+// doing so for every attempt.
+type errRateLimited struct {
+	retries int
+}
+
+func (e *errRateLimited) Error() string {
+	return fmt.Sprintf("rate limited (HTTP 429) after %d attempts — wait a moment and try again", e.retries+1)
+}
+
+// getWithRetry issues a GET and retries while the registry answers 429.
+// The caller owns closing the response body.
+func getWithRetry(url string) (*http.Response, error) {
+	var resp *http.Response
+	var err error
+
+	for attempt := 0; ; attempt++ {
+		resp, err = http.Get(url)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusTooManyRequests {
+			return resp, nil
+		}
+
+		resp.Body.Close()
+		if attempt >= rateLimitAttempts-1 {
+			return nil, &errRateLimited{retries: attempt}
+		}
+
+		wait := rateLimitBackoff[len(rateLimitBackoff)-1]
+		if attempt < len(rateLimitBackoff) {
+			wait = rateLimitBackoff[attempt]
+		}
+		if after := retryAfter(resp); after > 0 {
+			wait = after
+		}
+		time.Sleep(wait)
+	}
+}
+
+// retryAfter reads a Retry-After header expressed in seconds. Values that are
+// absent, unparseable or implausibly long are ignored in favour of the backoff.
+func retryAfter(resp *http.Response) time.Duration {
+	secs, err := strconv.Atoi(strings.TrimSpace(resp.Header.Get("Retry-After")))
+	if err != nil || secs <= 0 || secs > 30 {
+		return 0
+	}
+	return time.Duration(secs) * time.Second
 }

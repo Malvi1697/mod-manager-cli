@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -274,5 +276,133 @@ func TestDefaultRegistriesAreThunderstoreThenHexium(t *testing.T) {
 	}
 	if got[0].experimentalAPI() != "https://thunderstore.io/api/experimental/package/" {
 		t.Errorf("Thunderstore experimental API = %q", got[0].experimentalAPI())
+	}
+}
+
+// shortenBackoff keeps rate-limit tests fast.
+func shortenBackoff(t *testing.T) {
+	t.Helper()
+	original := rateLimitBackoff
+	rateLimitBackoff = []time.Duration{time.Millisecond}
+	t.Cleanup(func() { rateLimitBackoff = original })
+}
+
+func TestGetWithRetryRetriesRateLimits(t *testing.T) {
+	shortenBackoff(t)
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&calls, 1) < 3 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		fmt.Fprint(w, `{"version_number":"1.0.0"}`)
+	}))
+	defer srv.Close()
+
+	resp, err := getWithRetry(srv.URL)
+	if err != nil {
+		t.Fatalf("getWithRetry: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("made %d requests, want 3", got)
+	}
+}
+
+func TestGetWithRetryGivesUpOnPersistentRateLimit(t *testing.T) {
+	shortenBackoff(t)
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	_, err := getWithRetry(srv.URL)
+	if err == nil {
+		t.Fatal("expected an error when every attempt is rate limited")
+	}
+	if !strings.Contains(err.Error(), "429") {
+		t.Errorf("error %q should name the rate limit", err)
+	}
+	if got := atomic.LoadInt32(&calls); got != rateLimitAttempts {
+		t.Errorf("made %d requests, want %d", got, rateLimitAttempts)
+	}
+}
+
+func TestGetWithRetryDoesNotRetryOtherStatuses(t *testing.T) {
+	shortenBackoff(t)
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	resp, err := getWithRetry(srv.URL)
+	if err != nil {
+		t.Fatalf("getWithRetry: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 404 {
+		t.Errorf("status = %d, want 404", resp.StatusCode)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("made %d requests, want 1 — a 404 is an answer, not a retry", got)
+	}
+}
+
+func TestRateLimitedLookupIsReportedAsRateLimited(t *testing.T) {
+	shortenBackoff(t)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	limited := Registry{Name: "Limited", BaseURL: srv.URL, URLMarker: "p"}
+	useRegistries(t, limited)
+
+	_, err := GetPackageVersion("Searica", "DodgeShortcut", "1.4.0")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	// A rate limited mod must not look like a mod that does not exist.
+	if !strings.Contains(err.Error(), "rate limited") {
+		t.Errorf("error %q should say the request was rate limited", err)
+	}
+}
+
+func TestRetryAfterHeader(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   time.Duration
+	}{
+		{name: "seconds", header: "5", want: 5 * time.Second},
+		{name: "absent", header: "", want: 0},
+		{name: "http date is ignored", header: "Wed, 21 Oct 2026 07:28:00 GMT", want: 0},
+		{name: "zero ignored", header: "0", want: 0},
+		{name: "implausibly long ignored", header: "600", want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := &http.Response{Header: http.Header{}}
+			if tt.header != "" {
+				resp.Header.Set("Retry-After", tt.header)
+			}
+			if got := retryAfter(resp); got != tt.want {
+				t.Errorf("retryAfter(%q) = %v, want %v", tt.header, got, tt.want)
+			}
+		})
 	}
 }

@@ -3,7 +3,6 @@ package thunderstore
 import (
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"sync"
 )
@@ -28,7 +27,7 @@ func GetPackageVersion(owner, name, version string) (*Package, error) {
 // getPackageVersionFrom fetches a pinned version from a single registry.
 func getPackageVersionFrom(r Registry, owner, name, version string) (*Package, error) {
 	url := fmt.Sprintf("%s%s/%s/%s/", r.experimentalAPI(), owner, name, version)
-	resp, err := http.Get(url)
+	resp, err := getWithRetry(url)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
@@ -107,7 +106,7 @@ func GetPackage(owner, name string) (*Package, error) {
 // getPackageFrom fetches a package's latest version from a single registry.
 func getPackageFrom(r Registry, owner, name string) (*Package, error) {
 	url := fmt.Sprintf("%s%s/%s/", r.experimentalAPI(), owner, name)
-	resp, err := http.Get(url)
+	resp, err := getWithRetry(url)
 	if err != nil {
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
